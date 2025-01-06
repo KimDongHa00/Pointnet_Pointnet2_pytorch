@@ -291,7 +291,7 @@ class ConvBNReLURes1D(nn.Module):
     
 
 '''잔차연결에 따른 PointNet의 PointNetEncoder구조 변경'''
-
+'''
 class PointNetEncoder(nn.Module):
     def __init__(self, global_feat=True, feature_transform=False, channel=3):
         super(PointNetEncoder, self).__init__()
@@ -309,12 +309,12 @@ class PointNetEncoder(nn.Module):
 
     def forward(self, x):
         # 입력 디버깅
-        print("Input shape:", x.shape)
+        #print("Input shape:", x.shape)
         
         B, D, N = x.size()
         trans = self.stn(x)
         # STN 출력 디버깅
-        print("STN output shape:", trans.shape)
+        #print("STN output shape:", trans.shape)
 
         x = x.transpose(2, 1)
         if D > 3:
@@ -325,23 +325,6 @@ class PointNetEncoder(nn.Module):
             x = torch.cat([x, feature], dim=2)
         x = x.transpose(2, 1)
 
-        # ConvBNReLURes1D 입력 디버깅
-        print("Before Conv1 input shape:", x.shape)
-
-        x = self.conv1(x)  # [B, 64, N]
-        x = self.conv2(x)  # [B, 128, N]
-        x = self.conv3(x)  # [B, 1024, N]
-
-        x = torch.max(x, 2, keepdim=True)[0]  # [B, 1024, 1]
-        x = x.view(-1, 1024)  # [B, 1024]
-
-        if self.global_feat:
-            return x, trans, None
-        else:
-            x = x.view(-1, 1024, 1).repeat(1, 1, N)
-            return torch.cat([x, pointfeat], 1), trans, None
-        
-        '''
         x = self.conv1(x)
         if self.feature_transform:
             trans_feat = self.fstn(x)
@@ -362,7 +345,63 @@ class PointNetEncoder(nn.Module):
         else:
             x = x.view(-1, 1024, 1).repeat(1, 1, N)
             return torch.cat([x, pointfeat], 1), trans, trans_feat
-        '''
+'''
+#다시 수정
+class PointNetEncoder(nn.Module):
+    def __init__(self, global_feat=True, feature_transform=False, channel=3):
+        super(PointNetEncoder, self).__init__()
+        self.stn = STN3d(channel)
+
+        # 잔차 연결 추가된 MLP
+        self.conv1 = ConvBNReLURes1D(channel, res_expansion=1.0)
+        self.conv2 = ConvBNReLURes1D(64, res_expansion=1.0)
+        self.conv3 = ConvBNReLURes1D(128, res_expansion=1.0)
+
+        self.global_feat = global_feat
+        self.feature_transform = feature_transform
+
+        # STNkd 초기화 시 channel 동적 설정
+        if self.feature_transform:
+            self.fstn = STNkd(k=channel)
+
+    def forward(self, x):
+        B, D, N = x.size()
+
+        # STN3d 변환
+        trans = self.stn(x)
+        x = x.transpose(2, 1)
+        if D > 3:
+            feature = x[:, :, 3:]
+            x = x[:, :, :3]
+        x = torch.bmm(x, trans)
+        if D > 3:
+            x = torch.cat([x, feature], dim=2)
+        x = x.transpose(2, 1)
+
+        # 잔차 연결 적용된 conv1
+        x = self.conv1(x)
+        if self.feature_transform:
+            # STNkd 호출
+            print("Input to STNkd:", x.shape)  # 디버깅 로그 추가
+            trans_feat = self.fstn(x)
+            x = x.transpose(2, 1)
+            x = torch.bmm(x, trans_feat)
+            x = x.transpose(2, 1)
+        else:
+            trans_feat = None
+
+        pointfeat = x
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = torch.max(x, 2, keepdim=True)[0]
+        x = x.view(-1, 1024)
+
+        if self.global_feat:
+            return x, trans, trans_feat
+        else:
+            x = x.view(-1, 1024, 1).repeat(1, 1, N)
+            return torch.cat([x, pointfeat], 1), trans, trans_feat
+
         
 
 
