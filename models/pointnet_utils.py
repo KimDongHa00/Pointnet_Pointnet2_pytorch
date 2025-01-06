@@ -258,7 +258,7 @@ def get_activation(activation):
     else:
         return nn.ReLU(inplace=True)
     
-
+'''잠만대기
 class ConvBNReLURes1D(nn.Module):
     def __init__(self, channel, kernel_size=1, groups=1, res_expansion=1.0, bias=True, activation='relu'):
         super(ConvBNReLURes1D, self).__init__()
@@ -288,7 +288,27 @@ class ConvBNReLURes1D(nn.Module):
 
     def forward(self, x):
         return self.act(self.net2(self.net1(x)) + x)
-    
+'''
+#새로운 놈
+class ConvBNReLURes1D(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=1, groups=1, res_expansion=1.0, bias=True, activation='relu'):
+        super(ConvBNReLURes1D, self).__init__()
+        self.act = get_activation(activation)
+        self.net1 = nn.Sequential(
+            nn.Conv1d(in_channels=in_channels, out_channels=out_channels,  # out_channels 명시
+                      kernel_size=kernel_size, groups=groups, bias=bias),
+            nn.BatchNorm1d(out_channels),
+            self.act
+        )
+        self.net2 = nn.Sequential(
+            nn.Conv1d(in_channels=out_channels, out_channels=out_channels,  # 출력 크기 유지
+                      kernel_size=kernel_size, groups=groups, bias=bias),
+            nn.BatchNorm1d(out_channels),
+        )
+
+    def forward(self, x):
+        return self.act(self.net2(self.net1(x)) + x)
+
 
 '''잔차연결에 따른 PointNet의 PointNetEncoder구조 변경'''
 '''
@@ -352,22 +372,18 @@ class PointNetEncoder(nn.Module):
         super(PointNetEncoder, self).__init__()
         self.stn = STN3d(channel)
 
-        # 잔차 연결 추가된 MLP
-        self.conv1 = ConvBNReLURes1D(channel, res_expansion=1.0)
-        self.conv2 = ConvBNReLURes1D(64, res_expansion=1.0)
-        self.conv3 = ConvBNReLURes1D(128, res_expansion=1.0)
+        # ConvBNReLURes1D에서 입력 및 출력 채널 명시
+        self.conv1 = ConvBNReLURes1D(in_channels=channel, out_channels=64)
+        self.conv2 = ConvBNReLURes1D(in_channels=64, out_channels=128)
+        self.conv3 = ConvBNReLURes1D(in_channels=128, out_channels=1024)
 
         self.global_feat = global_feat
         self.feature_transform = feature_transform
-
-        # STNkd 초기화 시 channel 동적 설정
         if self.feature_transform:
-            self.fstn = STNkd(k=channel)
+            self.fstn = STNkd(k=64)
 
     def forward(self, x):
         B, D, N = x.size()
-
-        # STN3d 변환
         trans = self.stn(x)
         x = x.transpose(2, 1)
         if D > 3:
@@ -378,11 +394,8 @@ class PointNetEncoder(nn.Module):
             x = torch.cat([x, feature], dim=2)
         x = x.transpose(2, 1)
 
-        # 잔차 연결 적용된 conv1
-        x = self.conv1(x)
+        x = self.conv1(x)  # [B, 64, N]
         if self.feature_transform:
-            # STNkd 호출
-            print("Input to STNkd:", x.shape)  # 디버깅 로그 추가
             trans_feat = self.fstn(x)
             x = x.transpose(2, 1)
             x = torch.bmm(x, trans_feat)
@@ -390,10 +403,9 @@ class PointNetEncoder(nn.Module):
         else:
             trans_feat = None
 
-        pointfeat = x
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = torch.max(x, 2, keepdim=True)[0]
+        x = self.conv2(x)  # [B, 128, N]
+        x = self.conv3(x)  # [B, 1024, N]
+        x = torch.max(x, 2, keepdim=True)[0]  # [B, 1024, 1]
         x = x.view(-1, 1024)
 
         if self.global_feat:
@@ -402,7 +414,6 @@ class PointNetEncoder(nn.Module):
             x = x.view(-1, 1024, 1).repeat(1, 1, N)
             return torch.cat([x, pointfeat], 1), trans, trans_feat
 
-        
 
 
 '''기존 PointNetEncoder
