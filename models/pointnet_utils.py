@@ -290,42 +290,25 @@ class ConvBNReLURes1D(nn.Module):
         return self.act(self.net2(self.net1(x)) + x)
 '''
 #새로운 놈
-class ConvBNReLURes1D(nn.Module):
-    def __init__(self, channel, kernel_size=1, groups=1, res_expansion=1.0, bias=True, activation='relu'):
-        super(ConvBNReLURes1D, self).__init__()
-        self.act = get_activation(activation)
+class ResidualMLP(nn.Module):
+    def __init__(self, in_channels, out_channels, activation=nn.ReLU):
+        super(ResidualMLP, self).__init__()
+        self.linear1 = nn.Conv1d(in_channels, out_channels, 1)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.activation = activation()
 
-        # 잔차 연결을 위한 채널 매칭 레이어
-        self.match_channel = nn.Conv1d(channel, channel, kernel_size=1, bias=bias)
-
-        # 네트워크 구조
-        self.net1 = nn.Sequential(
-            nn.Conv1d(in_channels=channel, out_channels=int(channel * res_expansion),
-                      kernel_size=kernel_size, groups=groups, bias=bias),
-            nn.BatchNorm1d(int(channel * res_expansion)),
-            self.act
+        # 잔차 연결을 위한 매칭 레이어 (입력과 출력 채널 크기가 다를 경우)
+        self.residual = (
+            nn.Conv1d(in_channels, out_channels, 1)
+            if in_channels != out_channels
+            else nn.Identity()
         )
-        if groups > 1:
-            self.net2 = nn.Sequential(
-                nn.Conv1d(in_channels=int(channel * res_expansion), out_channels=channel,
-                          kernel_size=kernel_size, groups=groups, bias=bias),
-                nn.BatchNorm1d(channel),
-                self.act,
-                nn.Conv1d(in_channels=channel, out_channels=channel,
-                          kernel_size=kernel_size, bias=bias),
-                nn.BatchNorm1d(channel),
-            )
-        else:
-            self.net2 = nn.Sequential(
-                nn.Conv1d(in_channels=int(channel * res_expansion), out_channels=channel,
-                          kernel_size=kernel_size, bias=bias),
-                nn.BatchNorm1d(channel)
-            )
 
     def forward(self, x):
-        # 입력 크기와 출력 크기 일치
-        residual = self.match_channel(x)
-        return self.act(self.net2(self.net1(x)) + residual)
+        residual = self.residual(x)  # 입력 채널과 출력 채널을 일치시킴
+        x = self.activation(self.bn1(self.linear1(x)))
+        return x + residual  # 잔차 연결
+
 
 
 
@@ -391,19 +374,17 @@ class PointNetEncoder(nn.Module):
         super(PointNetEncoder, self).__init__()
         self.stn = STN3d(channel)
 
-        # 잔차 연결 적용
-        self.conv1 = ConvBNReLURes1D(channel, res_expansion=1.0)
-        self.conv2 = ConvBNReLURes1D(64, res_expansion=1.0)
-        self.conv3 = ConvBNReLURes1D(128, res_expansion=1.0)
+        # 기존 Conv1, Conv2, Conv3를 ResidualMLP로 대체
+        self.conv1 = ResidualMLP(channel, 64)
+        self.conv2 = ResidualMLP(64, 128)
+        self.conv3 = ResidualMLP(128, 1024)
 
         self.global_feat = global_feat
         self.feature_transform = feature_transform
         if self.feature_transform:
-            self.fstn = STNkd(k=channel)
+            self.fstn = STNkd(k=64)
 
     def forward(self, x):
-        print("Input shape:", x.shape)
-
         B, D, N = x.size()
         trans = self.stn(x)
         x = x.transpose(2, 1)
@@ -415,10 +396,8 @@ class PointNetEncoder(nn.Module):
             x = torch.cat([x, feature], dim=2)
         x = x.transpose(2, 1)
 
-        print("Before Conv1 input shape:", x.shape)
+        # Conv1, Conv2, Conv3 대신 ResidualMLP 사용
         x = self.conv1(x)
-        print("After Conv1 output shape:", x.shape)
-
         if self.feature_transform:
             trans_feat = self.fstn(x)
             x = x.transpose(2, 1)
@@ -430,6 +409,8 @@ class PointNetEncoder(nn.Module):
         pointfeat = x
         x = self.conv2(x)
         x = self.conv3(x)
+
+        # Max Pooling으로 전역 특징 추출
         x = torch.max(x, 2, keepdim=True)[0]
         x = x.view(-1, 1024)
 
