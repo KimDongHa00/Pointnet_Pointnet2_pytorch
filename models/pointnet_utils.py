@@ -308,8 +308,14 @@ class PointNetEncoder(nn.Module):
             self.fstn = STNkd(k=64)
 
     def forward(self, x):
+        # 입력 디버깅
+        print("Input shape:", x.shape)
+        
         B, D, N = x.size()
         trans = self.stn(x)
+        # STN 출력 디버깅
+        print("STN output shape:", trans.shape)
+
         x = x.transpose(2, 1)
         if D > 3:
             feature = x[:, :, 3:]
@@ -319,6 +325,23 @@ class PointNetEncoder(nn.Module):
             x = torch.cat([x, feature], dim=2)
         x = x.transpose(2, 1)
 
+        # ConvBNReLURes1D 입력 디버깅
+        print("Before Conv1 input shape:", x.shape)
+
+        x = self.conv1(x)  # [B, 64, N]
+        x = self.conv2(x)  # [B, 128, N]
+        x = self.conv3(x)  # [B, 1024, N]
+
+        x = torch.max(x, 2, keepdim=True)[0]  # [B, 1024, 1]
+        x = x.view(-1, 1024)  # [B, 1024]
+
+        if self.global_feat:
+            return x, trans, None
+        else:
+            x = x.view(-1, 1024, 1).repeat(1, 1, N)
+            return torch.cat([x, pointfeat], 1), trans, None
+        
+        '''
         x = self.conv1(x)
         if self.feature_transform:
             trans_feat = self.fstn(x)
@@ -339,8 +362,8 @@ class PointNetEncoder(nn.Module):
         else:
             x = x.view(-1, 1024, 1).repeat(1, 1, N)
             return torch.cat([x, pointfeat], 1), trans, trans_feat
+        '''
         
-
 
 
 '''기존 PointNetEncoder
