@@ -291,23 +291,42 @@ class ConvBNReLURes1D(nn.Module):
 '''
 #새로운 놈
 class ConvBNReLURes1D(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=1, groups=1, res_expansion=1.0, bias=True, activation='relu'):
+    def __init__(self, channel, kernel_size=1, groups=1, res_expansion=1.0, bias=True, activation='relu'):
         super(ConvBNReLURes1D, self).__init__()
         self.act = get_activation(activation)
+
+        # 잔차 연결을 위한 채널 매칭 레이어
+        self.match_channel = nn.Conv1d(channel, channel, kernel_size=1, bias=bias)
+
+        # 네트워크 구조
         self.net1 = nn.Sequential(
-            nn.Conv1d(in_channels=in_channels, out_channels=out_channels,  # out_channels 명시
+            nn.Conv1d(in_channels=channel, out_channels=int(channel * res_expansion),
                       kernel_size=kernel_size, groups=groups, bias=bias),
-            nn.BatchNorm1d(out_channels),
+            nn.BatchNorm1d(int(channel * res_expansion)),
             self.act
         )
-        self.net2 = nn.Sequential(
-            nn.Conv1d(in_channels=out_channels, out_channels=out_channels,  # 출력 크기 유지
-                      kernel_size=kernel_size, groups=groups, bias=bias),
-            nn.BatchNorm1d(out_channels),
-        )
+        if groups > 1:
+            self.net2 = nn.Sequential(
+                nn.Conv1d(in_channels=int(channel * res_expansion), out_channels=channel,
+                          kernel_size=kernel_size, groups=groups, bias=bias),
+                nn.BatchNorm1d(channel),
+                self.act,
+                nn.Conv1d(in_channels=channel, out_channels=channel,
+                          kernel_size=kernel_size, bias=bias),
+                nn.BatchNorm1d(channel),
+            )
+        else:
+            self.net2 = nn.Sequential(
+                nn.Conv1d(in_channels=int(channel * res_expansion), out_channels=channel,
+                          kernel_size=kernel_size, bias=bias),
+                nn.BatchNorm1d(channel)
+            )
 
     def forward(self, x):
-        return self.act(self.net2(self.net1(x)) + x)
+        # 입력 크기와 출력 크기 일치
+        residual = self.match_channel(x)
+        return self.act(self.net2(self.net1(x)) + residual)
+
 
 
 '''잔차연결에 따른 PointNet의 PointNetEncoder구조 변경'''
@@ -372,17 +391,19 @@ class PointNetEncoder(nn.Module):
         super(PointNetEncoder, self).__init__()
         self.stn = STN3d(channel)
 
-        # ConvBNReLURes1D에서 입력 및 출력 채널 명시
-        self.conv1 = ConvBNReLURes1D(in_channels=channel, out_channels=64)
-        self.conv2 = ConvBNReLURes1D(in_channels=64, out_channels=128)
-        self.conv3 = ConvBNReLURes1D(in_channels=128, out_channels=1024)
+        # 잔차 연결 적용
+        self.conv1 = ConvBNReLURes1D(channel, res_expansion=1.0)
+        self.conv2 = ConvBNReLURes1D(64, res_expansion=1.0)
+        self.conv3 = ConvBNReLURes1D(128, res_expansion=1.0)
 
         self.global_feat = global_feat
         self.feature_transform = feature_transform
         if self.feature_transform:
-            self.fstn = STNkd(k=64)
+            self.fstn = STNkd(k=channel)
 
     def forward(self, x):
+        print("Input shape:", x.shape)
+
         B, D, N = x.size()
         trans = self.stn(x)
         x = x.transpose(2, 1)
@@ -394,7 +415,10 @@ class PointNetEncoder(nn.Module):
             x = torch.cat([x, feature], dim=2)
         x = x.transpose(2, 1)
 
-        x = self.conv1(x)  # [B, 64, N]
+        print("Before Conv1 input shape:", x.shape)
+        x = self.conv1(x)
+        print("After Conv1 output shape:", x.shape)
+
         if self.feature_transform:
             trans_feat = self.fstn(x)
             x = x.transpose(2, 1)
@@ -403,9 +427,10 @@ class PointNetEncoder(nn.Module):
         else:
             trans_feat = None
 
-        x = self.conv2(x)  # [B, 128, N]
-        x = self.conv3(x)  # [B, 1024, N]
-        x = torch.max(x, 2, keepdim=True)[0]  # [B, 1024, 1]
+        pointfeat = x
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = torch.max(x, 2, keepdim=True)[0]
         x = x.view(-1, 1024)
 
         if self.global_feat:
